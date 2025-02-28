@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>三维热力学模拟-带重置功能版</title>
+    <style>
+        body { margin: 0; }
+        #gui { position: absolute; top: 10px; left: 10px; color: white; z-index: 100; }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dat.gui@0.7.7/build/dat.gui.min.js"></script>
+</head>
+<body>
+    <div id="gui"></div>
+    <script>
+// 物理常数
+const PHYSICS = {
+    k: 1.38064852e-23,
+    m: 6.63e-26,
+    gamma: 5/3,
+    scaleFactor: 1e8
+};
+
+// 初始配置参数
+const INITIAL_SETTINGS = {
+    particleCount: 1000,
+    containerScale: 1.0,
+    expansionSpeed: 0.0,
+    temperature: 300,
+    showParticles: true
+};
+
+// 当前配置
+let renderer, camera, scene, container;
+const settings = {...INITIAL_SETTINGS};
+
+// 1. 场景初始化
+function initThreeJS() {
+    renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setClearColor(0xeeeeee);
+    document.body.appendChild(renderer.domElement);
+
+    scene = new THREE.Scene();
+    camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
+    camera.position.set(20, 20, 20);
+    camera.lookAt(0, 0, 0);
+
+    scene.add(new THREE.AmbientLight(0xffffff, 0.5));
+    const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
+    directionalLight.position.set(10, 10, 10);
+    scene.add(directionalLight);
+}
+
+// 2. 创建容器
+function createContainer() {
+    const geometry = new THREE.BoxGeometry(
+        settings.containerScale * PHYSICS.scaleFactor,
+        settings.containerScale * PHYSICS.scaleFactor,
+        settings.containerScale * PHYSICS.scaleFactor
+    );
+    const edges = new THREE.EdgesGeometry(geometry);
+    const container = new THREE.LineSegments(
+        edges, 
+        new THREE.LineBasicMaterial({ color: 0x000000 })
+    );
+    scene.add(container);
+    return container;
+}
+
+// 3. 创建粒子系统
+function createParticles() {
+    const particles = new THREE.Group();
+    const geometry = new THREE.SphereGeometry(0.1);
+    const material = new THREE.MeshPhongMaterial({
+        color: 0x2194ce,
+        transparent: true,
+        opacity: 0.8
+    });
+
+    const v_rms = Math.sqrt(3 * PHYSICS.k * settings.temperature / PHYSICS.m) * 1e4;
+    
+    for (let i = 0; i < settings.particleCount; i++) {
+        const particle = new THREE.Mesh(geometry, material);
+        particle.position.set(
+            (Math.random() - 0.5) * 8,
+            (Math.random() - 0.5) * 8,
+            (Math.random() - 0.5) * 8
+        );
+        
+        const speed = v_rms * Math.sqrt(-Math.log(Math.random()));
+        const direction = new THREE.Vector3(
+            Math.random() - 0.5,
+            Math.random() - 0.5,
+            Math.random() - 0.5
+        ).normalize();
+        
+        particle.userData = {
+            velocity: direction.multiplyScalar(speed),
+            baseSpeed: speed / Math.sqrt(settings.temperature)
+        };
+        particles.add(particle);
+    }
+    scene.add(particles);
+    return particles;
+}
+
+// 4. 动画循环
+function animate(container, particles) {
+    let lastTime = Date.now();
+    let currentVolume = Math.pow(settings.containerScale, 3);
+
+    function update() {
+        const now = Date.now();
+        const deltaTime = (now - lastTime) / 1000;
+        lastTime = now;
+
+        if (settings.expansionSpeed !== 0) {
+            const dV = 3 * Math.pow(settings.containerScale, 2) * settings.expansionSpeed * deltaTime;
+            const volumeRatio = (currentVolume + dV) / currentVolume;
+            settings.temperature /= Math.pow(volumeRatio, PHYSICS.gamma - 1);
+            currentVolume += dV;
+            updateParticleSpeeds(particles);
+        }
+
+        settings.containerScale += settings.expansionSpeed * deltaTime;
+        container.scale.set(
+            settings.containerScale * PHYSICS.scaleFactor,
+            settings.containerScale * PHYSICS.scaleFactor,
+            settings.containerScale * PHYSICS.scaleFactor
+        );
+
+        particles.children.forEach(particle => {
+            particle.position.add(particle.userData.velocity.clone().multiplyScalar(deltaTime));
+            
+            const halfSize = 5 * settings.containerScale;
+            ['x', 'y', 'z'].forEach(axis => {
+                if (Math.abs(particle.position[axis]) > halfSize) {
+                    particle.userData.velocity[axis] *= -1;
+                    particle.position[axis] = Math.sign(particle.position[axis]) * (halfSize - 0.1);
+                }
+            });
+        });
+
+        particles.visible = settings.showParticles;
+    }
+
+    function render() {
+        renderer.render(scene, camera);
+        requestAnimationFrame(() => {
+            update();
+            render();
+        });
+    }
+    render();
+}
+
+// 5. 更新粒子速度
+function updateParticleSpeeds(particles) {
+    const speedFactor = Math.sqrt(settings.temperature / 300);
+    particles.children.forEach(particle => {
+        particle.userData.velocity.copy(
+            particle.userData.velocity.normalize()
+                .multiplyScalar(particle.userData.baseSpeed * speedFactor)
+        );
+    });
+}
+
+// 6. GUI控制面板（新增重置功能）
+function createGUI() {
+    const gui = new dat.GUI({ autoPlace: false });
+    
+    // 参数控制器
+    gui.add(settings, 'particleCount', 100, 5000).name('粒子数量').onChange(initScene);
+    gui.add(settings, 'expansionSpeed', -0.1, 0.1).step(0.001).name('膨胀速度(m/s)');
+    gui.add(settings, 'temperature').name('温度(K)').listen().min(50).max(2000);
+    gui.add(settings, 'showParticles').name('显示粒子');
+    
+    // 新增重置按钮
+    gui.add({
+        reset: () => {
+            Object.assign(settings, INITIAL_SETTINGS);
+            initScene();
+        }
+    }, 'reset').name('重置系统');
+
+    document.getElementById('gui').appendChild(gui.domElement);
+}
+
+// 7. 场景初始化
+function initScene() {
+    while(scene.children.length > 0) scene.remove(scene.children[0]);
+    const container = createContainer();
+    const particles = createParticles();
+    animate(container, particles);
+}
+
+// 启动程序
+initThreeJS();
+createGUI();
+initScene();
+
+// 窗口自适应
+window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+});
+    </script>
+</body>
+</html>
